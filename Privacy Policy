@@ -1,0 +1,61 @@
+Privacy Policy
+Last updated: August 6, 2025
+
+1. Introduction
+Welcome to the Experiential Network App (“we,” “our,” or “us”). We’re committed to protecting your privacy and handling your data responsibly. This Privacy Policy explains how we collect, use, store, and share information when you interact with our Google-Sheets–backed experiential network service via our Custom GPT.
+
+2. Information We Collect
+
+- User Identifiers
+  - `user_id`: A string you choose or that’s generated to uniquely identify your network.
+- Experiential Data
+  - Nodes: Each node’s type, quality (stress or content), energy level (1–5), and optional description.
+  - Connections: Relationships you create between nodes, including action (“+” or “–”), weight, and context.
+- Metadata
+  - Timestamps of when nodes or connections are created or updated.
+  - Your interactions (function calls) with the Custom GPT chat interface.
+
+3. How We Use Your Data
+
+- Network Modeling via Proprietary Algorithm
+  - We use a proprietary, in-house algorithm—created and maintained by our team—to map your experiential data into an evolving network and generate balance suggestions.
+  - The entire algorithmic process is initiated and controlled by your function calls (`create_user_sheet`, `upsert_node`, etc.), ensuring you direct how your data is analyzed.
+- Real-Time Feedback
+  - To fetch your network snapshot and guide you toward balance by analyzing stress versus content ratios using our algorithm.
+- Service Improvement
+  - To monitor usage patterns and refine our in-house modeling logic based on aggregate, anonymized data.
+
+4. Data Storage and Security
+
+- All data is stored in Google Sheets under your Google account via a dedicated service-account credential.
+- Access to the service-account key file (`gsheets-creds.json`) is restricted to authorized application servers.
+- Sheets API access is scoped only to the specific spreadsheets your network uses.
+- We employ industry-standard encryption (TLS) for all data in transit.
+
+5. Data Sharing and Disclosur
+
+- Internal
+  - Only our application servers use your data to perform the functions you invoke.
+- Third Parties
+  - We do not sell, rent, or otherwise share your personal or experiential data with external parties, except where required by law.
+
+6. Your Rights and Choices
+
+- Access & Correction
+  - You can view or modify your experiential network at any time directly in Google Sheets.
+- Deletion
+  - To delete your network and all associated data, simply delete the corresponding spreadsheet in your Drive. We will also remove your entry from the Registry sheet upon request.
+- Opt-Out
+  - You can stop using the service at any time; no further data will be recorded once you cease making function calls.
+
+7. Retention
+
+- We retain your Registry entries and spreadsheet data indefinitely, until you choose to delete them.
+
+8. Contact Us
+If you have any questions, concerns, or requests regarding this Privacy Policy or your data, please contact us at:
+
+JakeAtPerceptionAnalysis@gmail.com
+
+9. Updates to This Policy
+We may update this Privacy Policy occasionally to reflect changes in our practices. We will post any changes here and update the “Last updated” date above.
