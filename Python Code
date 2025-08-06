@@ -1,0 +1,208 @@
+import uuid
+import json
+from datetime import datetime
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# — Configuration —
+SERVICE_ACCOUNT_FILE = 'config/gsheets-creds.json'
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
+COLLECTIVE_SPREADSHEET_ID = '1Ofn9-PSe30yJJflAb8wg175XKgxywOcz2cHMfsY_CC0'
+
+# Initialize Google Sheets & Drive clients
+creds = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES
+)
+drive = build('drive', 'v3', credentials=creds)
+sheets = build('sheets', 'v4', credentials=creds).spreadsheets()
+
+app = FastAPI(title="Experiential Network Plugin")
+
+
+# — Pydantic models for request validation —
+class CreateUserSheetRequest(BaseModel):
+    user_id: str
+
+class FetchNetworkRequest(BaseModel):
+    sheet_id: str
+
+class UpsertNodeRequest(BaseModel):
+    sheet_id: str
+    node: dict
+
+class UpsertConnRequest(BaseModel):
+    sheet_id: str
+    conn: dict
+
+class CheckJoinRequest(BaseModel):
+    user_id: str
+    sheet_id: str
+    threshold: float = 0.7
+
+
+# — Helper to register in the central registry —
+def register_user_in_collective(user_id: str, sheet_id: str, status: str):
+    timestamp = datetime.utcnow().isoformat()
+    sheets.values().append(
+        spreadsheetId=COLLECTIVE_SPREADSHEET_ID,
+        range='Registry!A:D',
+        valueInputOption='RAW',
+        body={'values': [[user_id, sheet_id, status, timestamp]]}
+    ).execute()
+
+
+# — 1) Create User Sheet —
+@app.post("/create_user_sheet")
+def create_user_sheet(req: CreateUserSheetRequest):
+    file = drive.files().create(
+        body={
+            'name': f'Network — User {req.user_id}',
+            'mimeType': 'application/vnd.google-apps.spreadsheet'
+        },
+        fields='id'
+    ).execute()
+    sid = file['id']
+
+    requests = [
+        {'updateSheetProperties': {
+            'properties': {'sheetId': 0, 'title': 'Nodes'},
+            'fields': 'title'
+        }},
+        {'addSheet': {'properties': {'title': 'Connections'}}},
+        {'updateCells': {
+            'start': {'sheetId': 0, 'rowIndex': 0, 'columnIndex': 0},
+            'rows': [{
+                'values': [
+                    {'userEnteredValue': {'stringValue': h}}
+                    for h in ['NodeID','NodeType','Quality','Energy','LastUpdated']
+                ]
+            }],
+            'fields': 'userEnteredValue'
+        }},
+        {'updateCells': {
+            'start': {'sheetId': 1, 'rowIndex': 0, 'columnIndex': 0},
+            'rows': [{
+                'values': [
+                    {'userEnteredValue': {'stringValue': h}}
+                    for h in ['SourceNodeID','TargetNodeID','Action','Weight','Effect','Context']
+                ]
+            }],
+            'fields': 'userEnteredValue'
+        }},
+    ]
+    sheets.batchUpdate(spreadsheetId=sid, body={'requests': requests}).execute()
+    register_user_in_collective(req.user_id, sid, 'pending')
+    return {"sheet_id": sid}
+
+
+# — 2) Fetch All Nodes and Compute Effects —
+@app.post("/fetch_experiential_network")
+def fetch_experiential_network(req: FetchNetworkRequest):
+    raw_nodes = sheets.values().get(
+        spreadsheetId=req.sheet_id, range='Nodes!A2:E'
+    ).execute().get('values', [])
+    nodes = [
+        {'NodeID': r[0], 'NodeType': r[1], 'Quality': r[2],
+         'Energy': int(r[3]), 'LastUpdated': r[4]}
+        for r in raw_nodes if len(r) >= 5
+    ]
+    ids = {n['NodeID'] for n in nodes}
+
+    raw_conns = sheets.values().get(
+        spreadsheetId=req.sheet_id, range='Connections!A2:F'
+    ).execute().get('values', [])
+    u_sum = sum(n['Energy'] for n in nodes if n['Quality']=='U')
+    s_sum = sum(n['Energy'] for n in nodes if n['Quality']=='▲')
+
+    conns = []
+    for r in raw_conns:
+        if len(r) < 5:
+            continue
+        src, tgt, action, w, e = r[0], r[1], r[2], r[3], r[4]
+        if src in ids or tgt in ids:
+            weight = float(w)
+            effect = float(e) if e else (u_sum - s_sum)
+            conns.append({
+                'SourceNodeID': src,
+                'TargetNodeID': tgt,
+                'Action': action,
+                'Weight': weight,
+                'Effect': effect,
+                'Context': r[5] if len(r) > 5 else ''
+            })
+
+    return {"nodes": nodes, "connections": conns}
+
+
+# — 3) Upsert Node with Validation —
+@app.post("/upsert_node")
+def upsert_node(req: UpsertNodeRequest):
+    energy = max(1, min(5, int(req.node.get('Energy', 1))))
+    nid = req.node.get('NodeID') or f"N{uuid.uuid4().hex[:8]}"
+    timestamp = datetime.utcnow().isoformat()
+
+    sheets.values().append(
+        spreadsheetId=req.sheet_id,
+        range='Nodes!A:E',
+        valueInputOption='RAW',
+        body={'values': [[
+            nid,
+            req.node.get('NodeType','Object'),
+            req.node.get('Quality','U'),
+            energy,
+            timestamp
+        ]]}
+    ).execute()
+
+    return {"NodeID": nid}
+
+
+# — 4) Upsert Connection with Action Constraint —
+@app.post("/upsert_connection")
+def upsert_connection(req: UpsertConnRequest):
+    w = float(req.conn.get('Weight', 1))
+    values = [[
+        req.conn['SourceNodeID'],
+        req.conn['TargetNodeID'],
+        req.conn.get('Action','+'),
+        w,
+        '',  # effect blank to trigger recompute on fetch
+        req.conn.get('Context','')
+    ]]
+    sheets.values().append(
+        spreadsheetId=req.sheet_id,
+        range='Connections!A:F',
+        valueInputOption='RAW',
+        body={'values': values}
+    ).execute()
+
+    return {"status": "ok"}
+
+
+# — 5) Check Threshold and Join Collective —
+@app.post("/check_and_join")
+def check_and_join(req: CheckJoinRequest):
+    data = fetch_experiential_network(FetchNetworkRequest(sheet_id=req.sheet_id))
+    nodes = data['nodes']
+    u_sum = sum(n['Energy'] for n in nodes if n['Quality']=='U')
+    s_sum = sum(n['Energy'] for n in nodes if n['Quality']=='▲')
+    total = u_sum + s_sum
+    ratio = (u_sum / total) if total else 0
+
+    joined = False
+    if ratio >= req.threshold:
+        register_user_in_collective(req.user_id, req.sheet_id, 'joined')
+        joined = True
+
+    return {"joined": joined}
+
+
+# If you want to run this via `uvicorn`:
+# uvicorn this_module_name:app --host 0.0.0.0 --port 8000
