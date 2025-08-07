@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Aquarian — PWA + Chat + Stripe (Single File)</title>
+    <link rel="manifest" href="/manifest.webmanifest"><!-- create this later -->
+    <meta name="theme-color" content="#111827">
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+      :root { --w: 720px; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; background:#fafafa; color:#111; }
+      .wrap { max-width: var(--w); margin: 0 auto; display: grid; gap: 16px; }
+      .card { background:#fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
+      .row { margin-top: 12px; }
+      .muted { opacity: .8; font-size: 14px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      button { padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; }
+      button[disabled] { opacity: .6; cursor: not-allowed; }
+      code { background: #f6f6f6; padding: 0 4px; border-radius: 4px; }
+      .chat { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow: auto; padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; background:#fff; }
+      .bubble { padding: 8px 10px; border-radius: 10px; max-width: 85%; }
+      .user { align-self: flex-end; background:#e0f2fe; }
+      .assistant { align-self: flex-start; background:#f1f5f9; }
+      .chatbar { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .chatbar input { padding: 10px; border:1px solid #e5e7eb; border-radius:8px; }
+      .flex { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
+      .small { font-size: 12px; opacity: .7; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="module">
+      // ---------- EDIT THESE ----------
+      const BACKEND_URL = import.meta?.env?.VITE_BACKEND_URL ?? "https://your-service-name.onrender.com";
+      const STRIPE_PK   = import.meta?.env?.VITE_STRIPE_PK    ?? "pk_test_12345_replace_me";
+      // --------------------------------
+
+      import React from "https://esm.sh/react@18";
+      import { createRoot } from "https://esm.sh/react-dom@18/client";
+
+      // Firebase v10 (modular)
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+      import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+      // ----- Firebase init -----
+      const firebaseConfig = {
+        apiKey: "AIzaSyDgDxL-vN_hpmPOykgencZd2vGlBoxsKwk",
+        authDomain: "aquarian-8c213.firebaseapp.com",
+        projectId: "aquarian-8c213",
+        storageBucket: "aquarian-8c213.firebasestorage.app",
+        messagingSenderId: "941597574375",
+        appId: "1:941597574375:web:370c3f60c91ca83180ce42",
+        measurementId: "G-WQ3ETXS7N7"
+      };
+      const fbApp = initializeApp(firebaseConfig);
+      const auth = getAuth(fbApp);
+
+      async function ensureSignedIn() {
+        if (!auth.currentUser) await signInAnonymously(auth);
+        return new Promise((resolve) => {
+          const unsub = onAuthStateChanged(auth, (u) => { if (u) { unsub(); resolve(u); } });
+        });
+      }
+
+      // ----- API helpers (all require Authorization: Bearer <idToken>) -----
+      async function authedFetch(idToken, path, options={}) {
+        const res = await fetch(`${BACKEND_URL}${path}`, {
+          ...options,
+          headers: {
+            "Authorization": `Bearer ${idToken}`,
+            "Content-Type": "application/json",
+            ...(options.headers || {})
+          }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res;
+      }
+
+      async function getMe(idToken) {
+        const res = await authedFetch(idToken, "/user/me", { method: "POST", body: "{}" });
+        return res.json();
+      }
+
+      async function createPaymentIntent(idToken) {
+        const res = await authedFetch(idToken, "/create-payment-intent", { method: "POST", body: "{}" });
+        return res.json(); // { clientSecret }
+      }
+
+      async function sendChat(idToken, message) {
+        const res = await authedFetch(idToken, "/chat", {
+          method: "POST",
+          body: JSON.stringify({ message })
+        });
+        return res.json(); // { reply, actions }
+      }
+
+      async function getNetwork(idToken) {
+        const res = await authedFetch(idToken, "/network", { method: "GET" });
+        return res.json(); // { nodes, connections }
+      }
+
+      // ----- Components -----
+      function PaymentForm({ stripe, idToken }) {
+        const cardMount = React.useRef(null);
+        const elementsRef = React.useRef(null);
+        const cardElRef = React.useRef(null);
+
+        const [loading, setLoading] = React.useState(false);
+        const [msg, setMsg] = React.useState("");
+
+        React.useEffect(() => {
+          if (!stripe || !cardMount.current || elementsRef.current) return;
+          elementsRef.current = stripe.elements();
+          cardElRef.current = elementsRef.current.create("card", { hidePostalCode: true });
+          cardElRef.current.mount(cardMount.current);
+          return () => cardElRef.current?.unmount();
+        }, [stripe]);
+
+        const onPay = async (e) => {
+          e.preventDefault();
+          if (!stripe || !elementsRef.current || !cardElRef.current) return;
+          setLoading(true); setMsg("");
+          try {
+            const { clientSecret } = await createPaymentIntent(idToken);
+            const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
+              payment_method: { card: cardElRef.current }
+            });
+            if (error) setMsg(error.message || "Payment failed.");
+            else if (paymentIntent?.status === "succeeded") setMsg("Payment succeeded! Pro will activate shortly (via webhook).");
+            else setMsg(`Status: ${paymentIntent?.status ?? "unknown"}`);
+          } catch (e) {
+            setMsg(e.message || "Error creating payment.");
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        return (
+          React.createElement("form", { onSubmit: onPay, className: "card" },
+            React.createElement("h3", null, "Upgrade to Pro"),
+            React.createElement("div", { ref: cardMount, style: { padding: "12px 10px", border: "1px solid #e5e7eb", borderRadius: 8, background:"#fff" } }),
+            React.createElement("div", { className: "row" },
+              React.createElement("button", { disabled: !stripe || loading }, loading ? "Processing..." : "Pay $5 for Pro")
+            ),
+            msg && React.createElement("div", { className: "row small" }, msg)
+          )
+        );
+      }
+
+      function ChatBox({ idToken }) {
+        const [chat, setChat] = React.useState([]);
+        const [input, setInput] = React.useState("");
+        const [busy, setBusy] = React.useState(false);
+        const [graph, setGraph] = React.useState(null);
+        const [error, setError] = React.useState("");
+
+        const onSend = async () => {
+          const text = input.trim();
+          if (!text || busy) return;
+          setChat((c) => [...c, { role: "user", content: text }]);
+          setInput("");
+          setBusy(true); setError("");
+          try {
+            const { reply } = await sendChat(idToken, text);
+            setChat((c) => [...c, { role: "assistant", content: reply }]);
+            // Optional: refresh graph snapshot after each turn
+            try {
+              const g = await getNetwork(idToken);
+              setGraph(g);
+            } catch {}
+          } catch (e) {
+            setError(e.message || "Chat error.");
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        return (
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", null, "Chat"),
+            React.createElement("div", { className: "chat", id: "chat" },
+              chat.map((m, i) =>
+                React.createElement("div", { key: i, className: `bubble ${m.role === "user" ? "user" : "assistant"}` }, m.content)
+              )
+            ),
+            React.createElement("div", { className: "chatbar row" },
+              React.createElement("input", {
+                placeholder: "Type a message…",
+                value: input,
+                onChange: (e) => setInput(e.target.value),
+                onKeyDown: (e) => e.key === "Enter" && onSend()
+              }),
+              React.createElement("button", { onClick: onSend, disabled: busy }, busy ? "…" : "Send")
+            ),
+            error && React.createElement("div", { className: "row", style: { color: "crimson" } }, error),
+            graph && React.createElement("div", { className: "row small" },
+              React.createElement("div", null, "Nodes: ", graph.nodes?.length ?? 0, " | Connections: ", graph.connections?.length ?? 0)
+            )
+          )
+        );
+      }
+
+      function App() {
+        const [uid, setUid] = React.useState(null);
+        const [idToken, setIdToken] = React.useState(null);
+        const [me, setMe] = React.useState(null);
+        const [stripe, setStripe] = React.useState(null);
+        const [err, setErr] = React.useState("");
+
+        // Init Stripe
+        React.useEffect(() => {
+          if (!window.Stripe) setErr("Stripe.js failed to load.");
+          else setStripe(window.Stripe(STRIPE_PK));
+        }, []);
+
+        // Sign in & fetch profile
+        React.useEffect(() => {
+          (async () => {
+            try {
+              const user = await ensureSignedIn();
+              setUid(user.uid);
+              const token = await user.getIdToken();
+              setIdToken(token);
+              try {
+                const profile = await getMe(token);
+                setMe(profile);
+              } catch {}
+            } catch (e) {
+              setErr(e.message || "Auth error.");
+            }
+          })();
+        }, []);
+
+        // Pro-only probe
+        const [proPing, setProPing] = React.useState("");
+        const pingPro = async () => {
+          if (!idToken) return;
+          setProPing("Checking…");
+          try {
+            const res = await fetch(`${BACKEND_URL}/pro/status`, { headers: { "Authorization": `Bearer ${idToken}` } });
+            if (res.ok) setProPing("Pro endpoint OK");
+            else setProPing(`${res.status} ${await res.text()}`);
+          } catch (e) {
+            setProPing(`${e.message}`);
+          }
+        };
+
+        return (
+          React.createElement("div", { className: "wrap" },
+            React.createElement("div", { className: "card" },
+              React.createElement("h1", null, "Aquarian"),
+              React.createElement("div", { className: "flex" },
+                React.createElement("div", null, "UID: ", React.createElement("span", { className: "mono" }, uid ?? "…")),
+                React.createElement("div", null, "Pro: ", me?.pro ? "Yes" : "No")
+              ),
+              err && React.createElement("div", { className: "row", style: { color: "crimson" } }, err),
+              React.createElement("div", { className: "row small muted" },
+                "After paying, Stripe hits ",
+                React.createElement("code", null, "/stripe/webhook"),
+                " and sets ",
+                React.createElement("code", null, "users/{uid}.pro = true"),
+                "."
+              )
+            ),
+
+            idToken && React.createElement(ChatBox, { idToken }),
+
+            idToken && stripe && React.createElement(PaymentForm, { stripe, idToken }),
+
+            React.createElement("div", { className: "card" },
+              React.createElement("h3", null, "Pro-only check"),
+              React.createElement("div", { className: "flex" },
+                React.createElement("button", { onClick: pingPro, disabled: !idToken }, "Call /pro/status"),
+                proPing && React.createElement("span", { className: "small" }, proPing)
+              )
+            )
+          )
+        );
+      }
+
+      createRoot(document.getElementById("root")).render(
+        React.createElement(React.StrictMode, null, React.createElement(App))
+      );
+
+      // --- PWA: register service worker (expects /sw.js at site root) ---
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch(()=>{ /* noop */ });
+      }
+    </script>
+  </body>
+</html>
