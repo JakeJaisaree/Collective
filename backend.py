@@ -35,7 +35,7 @@ PRICE_CENTS = int(os.getenv("PRICE_CENTS", "500"))
 CURRENCY = os.getenv("CURRENCY", "usd")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # cheap/fast default
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")  # cheap/fast default
 
 FIREBASE_KEY_B64 = os.getenv("FIREBASE_KEY_B64")
 FIREBASE_KEY_PATH = None
@@ -455,3 +455,4 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+
